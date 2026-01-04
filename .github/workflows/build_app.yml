@@ -1,0 +1,102 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'simple_live_app/**'
+      - 'simple_live_core/**'
+      - '.github/workflows/build-android-apk.yml'
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '17'
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.38.x'
+        cache: true
+
+    - name: Install dependencies
+      run: |
+        cd simple_live_app
+        flutter pub get
+
+    - name: Generate build number
+      id: build_number
+      run: |
+        BUILD_NUMBER=$(git rev-list --count HEAD)
+        echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+        echo "Build number: $BUILD_NUMBER"
+
+    - name: Update version info
+      run: |
+        VERSION=$(grep -oP 'version:\s*\K[^\s+]+' simple_live_app/pubspec.yaml | head -1)
+        BASE_VERSION=$(echo $VERSION | cut -d'+' -f1)
+        NEW_VERSION="${BASE_VERSION}+${{ steps.build_number.outputs.BUILD_NUMBER }}"
+        sed -i "s/version:.*/version: $NEW_VERSION/" simple_live_app/pubspec.yaml
+        echo "Updated version to: $NEW_VERSION"
+
+    - name: Build APK (all ABIs)
+      run: |
+        cd simple_live_app
+        flutter build apk --release --split-per-abi
+
+    - name: Build App Bundle
+      run: |
+        cd simple_live_app
+        flutter build appbundle --release
+
+    - name: Upload APK artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-apks
+        path: |
+          simple_live_app/build/app/outputs/flutter-apk/*.apk
+        retention-days: 7
+
+    - name: Upload App Bundle artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-appbundle
+        path: |
+          simple_live_app/build/app/outputs/bundle/release/app-release.aab
+        retention-days: 7
+
+    - name: Create GitHub Release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          simple_live_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          simple_live_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
+          simple_live_app/build/app/outputs/bundle/release/app-release.aab
+        draft: false
+        prerelease: false
+
+    - name: Output build info
+      run: |
+        echo "=== Build Completed Successfully ==="
+        echo "Build Number: ${{ steps.build_number.outputs.BUILD_NUMBER }}"
+        echo "APK Files:"
+        ls -la simple_live_app/build/app/outputs/flutter-apk/*.apk
+        echo ""
+        echo "App Bundle:"
+        ls -la simple_live_app/build/app/outputs/bundle/release/*.aab
