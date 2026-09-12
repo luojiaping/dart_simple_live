@@ -100,6 +100,32 @@ mixin PlayerStateMixin on PlayerMixin {
   /// 是否处于全屏状态
   RxBool fullScreenState = false.obs;
 
+  /// 全屏手势缩放比例
+  final RxDouble playerScale = 1.0.obs;
+
+  /// 全屏手势位移
+  final Rx<Offset> playerOffset = Offset.zero.obs;
+
+  /// 是否对画面进行了缩放或位移
+  bool get isPlayerTransformed =>
+      playerScale.value != 1.0 || playerOffset.value != Offset.zero;
+
+  /// 当前画面变换矩阵（以屏幕中心为缩放中心）
+  Matrix4 get playerTransformMatrix {
+    final center = Offset(Get.width / 2, Get.height / 2);
+    return Matrix4.identity()
+      ..translate(playerOffset.value.dx, playerOffset.value.dy)
+      ..translate(center.dx, center.dy)
+      ..scale(playerScale.value)
+      ..translate(-center.dx, -center.dy);
+  }
+
+  /// 重置画面缩放与位移
+  void resetPlayerTransform() {
+    playerScale.value = 1.0;
+    playerOffset.value = Offset.zero;
+  }
+
   /// 显示手势Tip
   RxBool showGestureTip = false.obs;
 
@@ -274,6 +300,7 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
   /// 进入全屏
   void enterFullScreen() {
     fullScreenState.value = true;
+    resetPlayerTransform();
     if (Platform.isAndroid || Platform.isIOS) {
       //全屏
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
@@ -289,6 +316,7 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
 
   /// 退出全屏
   void exitFull() {
+    resetPlayerTransform();
     if (Platform.isAndroid || Platform.isIOS) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge,
           overlays: SystemUiOverlay.values);
@@ -335,6 +363,7 @@ mixin PlayerSystemMixin on PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin {
   ///退出小窗模式()
   void exitSmallWindow() {
     if (!(Platform.isAndroid || Platform.isIOS)) {
+      resetPlayerTransform();
       fullScreenState.value = false;
       smallWindowState.value = false;
       windowManager.setTitleBarStyle(TitleBarStyle.normal);
@@ -515,6 +544,103 @@ mixin PlayerGestureControlMixin
     } else {
       enterFullScreen();
     }
+  }
+
+  /// 切换到下一个在播直播间（由 LiveRoomController 实现）
+  void nextChannel() {}
+
+  /// 切换到上一个在播直播间（由 LiveRoomController 实现）
+  void prevChannel() {}
+
+  /// 全屏画面缩放/位移状态
+  double _gestureStartScale = 1.0;
+  Offset _gestureStartOffset = Offset.zero;
+  Offset _gestureStartFocal = Offset.zero;
+  double _gestureStartFactor = 1.0;
+  bool _transformGestureActive = false;
+  bool _twoFingerUsed = false;
+  bool _swipeTriggered = false;
+  Offset _swipeStartFocal = Offset.zero;
+
+  /// 全屏手势开始
+  /// - 双指：画面缩放/自由拖拽
+  /// - 单指：上下滑动切换直播间
+  void onScaleStart(ScaleStartDetails details) {
+    if (lockControlsState.value) {
+      return;
+    }
+    _transformGestureActive = false;
+    _swipeTriggered = false;
+    _twoFingerUsed = details.pointerCount >= 2;
+    if (_twoFingerUsed) {
+      _startTransformGesture(details.localFocalPoint, details.scale);
+    } else {
+      _swipeStartFocal = details.localFocalPoint;
+    }
+  }
+
+  /// 全屏手势更新
+  void onScaleUpdate(ScaleUpdateDetails details) {
+    if (lockControlsState.value) {
+      return;
+    }
+    if (details.pointerCount >= 2) {
+      // 双指：缩放 + 自由拖拽
+      _twoFingerUsed = true;
+      if (!_transformGestureActive) {
+        _startTransformGesture(details.localFocalPoint, details.scale);
+      }
+      final startFactor = _gestureStartFactor == 0 ? 1.0 : _gestureStartFactor;
+      final newScale =
+          (_gestureStartScale * details.scale / startFactor).clamp(0.5, 5.0);
+      final k = newScale / _gestureStartScale;
+      final center = Offset(Get.width / 2, Get.height / 2);
+      final newOffset = _gestureStartOffset * k +
+          (details.localFocalPoint - center) -
+          (_gestureStartFocal - center) * k;
+      playerScale.value = newScale;
+      playerOffset.value = _clampPlayerOffset(newOffset, newScale);
+      return;
+    }
+
+    // 单指：上下滑动切换直播间
+    if (_twoFingerUsed || _swipeTriggered) {
+      return;
+    }
+    final delta = details.localFocalPoint - _swipeStartFocal;
+    if (delta.dy.abs() > 70 && delta.dy.abs() > delta.dx.abs() * 1.2) {
+      _swipeTriggered = true;
+      if (delta.dy < 0) {
+        nextChannel();
+      } else {
+        prevChannel();
+      }
+    }
+  }
+
+  /// 全屏手势结束
+  void onScaleEnd(ScaleEndDetails details) {
+    _transformGestureActive = false;
+    _twoFingerUsed = false;
+    _swipeTriggered = false;
+  }
+
+  void _startTransformGesture(Offset focal, double scaleFactor) {
+    _transformGestureActive = true;
+    _gestureStartScale = playerScale.value;
+    _gestureStartOffset = playerOffset.value;
+    _gestureStartFocal = focal;
+    _gestureStartFactor = scaleFactor;
+  }
+
+  /// 限制位移，避免画面完全拖出屏幕
+  Offset _clampPlayerOffset(Offset offset, double scale) {
+    final maxX = (scale - 1).abs() * Get.width / 2;
+    final maxY = (scale - 1).abs() * Get.height / 2;
+    return Offset(
+      offset.dx.clamp(-maxX, maxX).toDouble(),
+      offset.dy.clamp(-maxY, maxY).toDouble(),
+    );
   }
 
   bool verticalDragging = false;

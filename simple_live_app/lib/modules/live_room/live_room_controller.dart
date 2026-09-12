@@ -974,6 +974,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
 
+    resetPlayerTransform();
+
     rxSite.value = site;
     rxRoomId.value = roomId;
 
@@ -991,6 +993,44 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     // 刷新信息
     loadData();
+  }
+
+  /// 切换到下一个在播直播间
+  @override
+  void nextChannel() {
+    var liveChannels = FollowService.instance.liveList;
+    if (liveChannels.isEmpty) {
+      SmartDialog.showToast("没有正在直播的频道");
+      return;
+    }
+    var index = liveChannels.indexWhere(
+      (element) => element.id == "${site.id}_$roomId",
+    );
+    index += 1;
+    if (index >= liveChannels.length) {
+      index = 0;
+    }
+    var nextChannel = liveChannels[index];
+    resetRoom(Sites.allSites[nextChannel.siteId]!, nextChannel.roomId);
+  }
+
+  /// 切换到上一个在播直播间
+  @override
+  void prevChannel() {
+    var liveChannels = FollowService.instance.liveList;
+    if (liveChannels.isEmpty) {
+      SmartDialog.showToast("没有正在直播的频道");
+      return;
+    }
+    var index = liveChannels.indexWhere(
+      (element) => element.id == "${site.id}_$roomId",
+    );
+    index -= 1;
+    if (index < 0) {
+      index = liveChannels.length - 1;
+    }
+    var nextChannel = liveChannels[index];
+    resetRoom(Sites.allSites[nextChannel.siteId]!, nextChannel.roomId);
   }
 
   void copyErrorDetail() {

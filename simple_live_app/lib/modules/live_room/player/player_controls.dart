@@ -25,9 +25,13 @@ Widget playerControls(
 ) {
   return Obx(() {
     if (controller.fullScreenState.value) {
-      return buildFullControls(
-        videoState,
-        controller,
+      final controls = buildFullControls(videoState, controller);
+      // 控制层抵消画面缩放/位移，保证弹幕与按钮位置不受影响
+      return Obx(
+        () => Transform(
+          transform: Matrix4.inverted(controller.playerTransformMatrix),
+          child: controls,
+        ),
       );
     }
     return buildControls(
@@ -80,16 +84,10 @@ Widget buildFullControls(
         Positioned.fill(
           child: GestureDetector(
             onTap: controller.onTap,
-            onDoubleTapDown: controller.onDoubleTap,
-            onLongPress: () {
-              if (controller.lockControlsState.value) {
-                return;
-              }
-              showFollowUser(controller);
-            },
-            onVerticalDragStart: controller.onVerticalDragStart,
-            onVerticalDragUpdate: controller.onVerticalDragUpdate,
-            onVerticalDragEnd: controller.onVerticalDragEnd,
+            // 全屏：双指缩放/自由拖拽，单指上下滑动切换直播间
+            onScaleStart: controller.onScaleStart,
+            onScaleUpdate: controller.onScaleUpdate,
+            onScaleEnd: controller.onScaleEnd,
             child: MouseRegion(
               onHover: (PointerHoverEvent event) {
                 controller.onHover(event, videoState.context);
@@ -174,6 +172,22 @@ Widget buildFullControls(
                       Icons.camera_alt_outlined,
                       color: Colors.white,
                       size: 24,
+                    ),
+                  ),
+                  // 恢复画面缩放/位移
+                  Obx(
+                    () => IconButton(
+                      tooltip: "恢复屏幕",
+                      onPressed: controller.isPlayerTransformed
+                          ? controller.resetPlayerTransform
+                          : null,
+                      icon: Icon(
+                        Icons.restart_alt,
+                        color: controller.isPlayerTransformed
+                            ? Colors.white
+                            : Colors.white38,
+                        size: 24,
+                      ),
                     ),
                   ),
                   IconButton(
@@ -467,10 +481,15 @@ Widget buildControls(
         child: GestureDetector(
           onTap: controller.onTap,
           onDoubleTapDown: controller.onDoubleTap,
+          onLongPress: () {
+            if (controller.lockControlsState.value) {
+              return;
+            }
+            showFollowUser(controller);
+          },
           onVerticalDragStart: controller.onVerticalDragStart,
           onVerticalDragUpdate: controller.onVerticalDragUpdate,
           onVerticalDragEnd: controller.onVerticalDragEnd,
-          //onLongPress: controller.showDebugInfo,
           child: MouseRegion(
             onEnter: controller.onEnter,
             child: Container(
