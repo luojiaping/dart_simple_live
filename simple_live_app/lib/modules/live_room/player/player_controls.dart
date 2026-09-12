@@ -50,7 +50,7 @@ Widget buildFullControls(
 ) {
   var padding = MediaQuery.of(videoState.context).padding;
   GlobalKey volumeButtonkey = GlobalKey();
-  return DragToMoveArea(
+  return _DesktopDragToMoveArea(
     child: Stack(
       children: [
         Container(),
@@ -412,6 +412,21 @@ Widget buildFullControls(
       ],
     ),
   );
+}
+
+/// 桌面端全屏允许拖动窗口；移动端不拦截手势，避免影响缩放/拖拽
+class _DesktopDragToMoveArea extends StatelessWidget {
+  const _DesktopDragToMoveArea({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      return DragToMoveArea(child: child);
+    }
+    return child;
+  }
 }
 
 Widget buildLockButton(LiveRoomController controller) {
