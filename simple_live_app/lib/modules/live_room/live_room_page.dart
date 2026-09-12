@@ -254,30 +254,39 @@ class LiveRoomPage extends GetView<LiveRoomController> {
       boxFit = BoxFit.contain;
       aspectRatio = 4 / 3;
     }
+    final video = Video(
+      key: controller.globalPlayerKey,
+      controller: controller.videoController,
+      pauseUponEnteringBackgroundMode:
+          AppSettingsController.instance.playerAutoPause.value,
+      resumeUponEnteringForegroundMode:
+          AppSettingsController.instance.playerAutoPause.value,
+      controls: (state) {
+        return playerControls(state, controller);
+      },
+      aspectRatio: aspectRatio,
+      fit: boxFit,
+      // 自己实现
+      wakelock: false,
+    );
     return Stack(
       children: [
         Obx(
-          () => ClipRect(
-            child: Transform(
-              transform: controller.playerTransformMatrix,
-              filterQuality: FilterQuality.low,
-              child: Video(
-                key: controller.globalPlayerKey,
-                controller: controller.videoController,
-                pauseUponEnteringBackgroundMode:
-                    AppSettingsController.instance.playerAutoPause.value,
-                resumeUponEnteringForegroundMode:
-                    AppSettingsController.instance.playerAutoPause.value,
-                controls: (state) {
-                  return playerControls(state, controller);
-                },
-                aspectRatio: aspectRatio,
-                fit: boxFit,
-                // 自己实现
-                wakelock: false,
-              ),
-            ),
-          ),
+          // 仅全屏启用缩放/拖拽，避免与半屏亮度/音量手势冲突
+          () => controller.fullScreenState.value
+              ? InteractiveViewer(
+                  transformationController: controller.playerViewerController,
+                  minScale: 0.5,
+                  maxScale: 5.0,
+                  panEnabled: !controller.lockControlsState.value,
+                  scaleEnabled: !controller.lockControlsState.value,
+                  clipBehavior: Clip.hardEdge,
+                  onInteractionStart: controller.onPlayerInteractionStart,
+                  onInteractionUpdate: controller.onPlayerInteractionUpdate,
+                  onInteractionEnd: controller.onPlayerInteractionEnd,
+                  child: video,
+                )
+              : video,
         ),
         Obx(
           () => Visibility(

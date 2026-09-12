@@ -27,11 +27,13 @@ Widget playerControls(
     if (controller.fullScreenState.value) {
       final controls = buildFullControls(videoState, controller);
       // 控制层抵消画面缩放/位移，保证弹幕与按钮位置不受影响
-      return Obx(
-        () => Transform(
-          transform: Matrix4.inverted(controller.playerTransformMatrix),
-          child: controls,
+      return ValueListenableBuilder<Matrix4>(
+        valueListenable: controller.playerViewerController,
+        builder: (_, matrix, child) => Transform(
+          transform: Matrix4.inverted(matrix),
+          child: child,
         ),
+        child: controls,
       );
     }
     return buildControls(
@@ -84,10 +86,7 @@ Widget buildFullControls(
         Positioned.fill(
           child: GestureDetector(
             onTap: controller.onTap,
-            // 全屏：双指缩放/自由拖拽，单指上下滑动切换直播间
-            onScaleStart: controller.onScaleStart,
-            onScaleUpdate: controller.onScaleUpdate,
-            onScaleEnd: controller.onScaleEnd,
+            // 全屏缩放/拖拽/换台手势由外层 InteractiveViewer 处理
             child: MouseRegion(
               onHover: (PointerHoverEvent event) {
                 controller.onHover(event, videoState.context);
@@ -175,20 +174,23 @@ Widget buildFullControls(
                     ),
                   ),
                   // 恢复画面缩放/位移
-                  Obx(
-                    () => IconButton(
-                      tooltip: "恢复屏幕",
-                      onPressed: controller.isPlayerTransformed
-                          ? controller.resetPlayerTransform
-                          : null,
-                      icon: Icon(
-                        Icons.restart_alt,
-                        color: controller.isPlayerTransformed
-                            ? Colors.white
-                            : Colors.white38,
-                        size: 24,
-                      ),
-                    ),
+                  ValueListenableBuilder<Matrix4>(
+                    valueListenable: controller.playerViewerController,
+                    builder: (_, matrix, __) {
+                      final transformed =
+                          controller.isMatrixTransformed(matrix);
+                      return IconButton(
+                        tooltip: "恢复屏幕",
+                        onPressed: transformed
+                            ? controller.resetPlayerTransform
+                            : null,
+                        icon: Icon(
+                          Icons.restart_alt,
+                          color: transformed ? Colors.white : Colors.white38,
+                          size: 24,
+                        ),
+                      );
+                    },
                   ),
                   IconButton(
                     onPressed: () {

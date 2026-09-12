@@ -100,30 +100,25 @@ mixin PlayerStateMixin on PlayerMixin {
   /// 是否处于全屏状态
   RxBool fullScreenState = false.obs;
 
-  /// 全屏手势缩放比例
-  final RxDouble playerScale = 1.0.obs;
+  /// 画面缩放/拖拽控制器
+  final TransformationController playerViewerController =
+      TransformationController();
 
-  /// 全屏手势位移
-  final Rx<Offset> playerOffset = Offset.zero.obs;
+  /// 矩阵是否存在缩放或位移
+  bool isMatrixTransformed(Matrix4 matrix) {
+    final scale = matrix.getMaxScaleOnAxis();
+    return (scale - 1.0).abs() > 0.001 ||
+        matrix.storage[12].abs() > 0.5 ||
+        matrix.storage[13].abs() > 0.5;
+  }
 
   /// 是否对画面进行了缩放或位移
   bool get isPlayerTransformed =>
-      playerScale.value != 1.0 || playerOffset.value != Offset.zero;
-
-  /// 当前画面变换矩阵（以屏幕中心为缩放中心）
-  Matrix4 get playerTransformMatrix {
-    final center = Offset(Get.width / 2, Get.height / 2);
-    return Matrix4.identity()
-      ..translate(playerOffset.value.dx, playerOffset.value.dy)
-      ..translate(center.dx, center.dy)
-      ..scale(playerScale.value)
-      ..translate(-center.dx, -center.dy);
-  }
+      isMatrixTransformed(playerViewerController.value);
 
   /// 重置画面缩放与位移
   void resetPlayerTransform() {
-    playerScale.value = 1.0;
-    playerOffset.value = Offset.zero;
+    playerViewerController.value = Matrix4.identity();
   }
 
   /// 显示手势Tip
@@ -552,95 +547,73 @@ mixin PlayerGestureControlMixin
   /// 切换到上一个在播直播间（由 LiveRoomController 实现）
   void prevChannel() {}
 
-  /// 全屏画面缩放/位移状态
-  double _gestureStartScale = 1.0;
-  Offset _gestureStartOffset = Offset.zero;
-  Offset _gestureStartFocal = Offset.zero;
-  double _gestureStartFactor = 1.0;
-  bool _transformGestureActive = false;
-  bool _twoFingerUsed = false;
-  bool _swipeTriggered = false;
+  /// 单指上下滑动换台状态
   Offset _swipeStartFocal = Offset.zero;
+  bool _swipeCandidate = false;
+  int _swipeDirection = 0;
+  bool _twoFingerUsed = false;
 
-  /// 全屏手势开始
-  /// - 双指：画面缩放/自由拖拽
-  /// - 单指：上下滑动切换直播间
-  void onScaleStart(ScaleStartDetails details) {
-    if (lockControlsState.value) {
-      return;
-    }
-    _transformGestureActive = false;
-    _swipeTriggered = false;
+  /// 画面手势开始
+  void onPlayerInteractionStart(ScaleStartDetails details) {
     _twoFingerUsed = details.pointerCount >= 2;
-    if (_twoFingerUsed) {
-      _startTransformGesture(details.localFocalPoint, 1.0);
-    } else {
-      _swipeStartFocal = details.localFocalPoint;
-    }
+    _swipeCandidate = false;
+    _swipeDirection = 0;
+    _swipeStartFocal = details.localFocalPoint;
   }
 
-  /// 全屏手势更新
-  void onScaleUpdate(ScaleUpdateDetails details) {
+  /// 画面手势更新
+  void onPlayerInteractionUpdate(ScaleUpdateDetails details) {
+    if (details.pointerCount >= 2) {
+      // 双指：交给 InteractiveViewer 缩放/拖拽
+      _twoFingerUsed = true;
+      if (_swipeCandidate) {
+        _swipeCandidate = false;
+        _swipeDirection = 0;
+        showGestureTip.value = false;
+      }
+      return;
+    }
+    // 仅处理单指触摸滑动（鼠标滚轮/触控板 pointerCount 为 0）
+    if (details.pointerCount != 1) {
+      return;
+    }
     if (lockControlsState.value) {
       return;
     }
-    if (details.pointerCount >= 2) {
-      // 双指：缩放 + 自由拖拽
-      _twoFingerUsed = true;
-      if (!_transformGestureActive) {
-        _startTransformGesture(details.localFocalPoint, details.scale);
-      }
-      final startFactor = _gestureStartFactor == 0 ? 1.0 : _gestureStartFactor;
-      final newScale =
-          (_gestureStartScale * details.scale / startFactor).clamp(0.5, 5.0);
-      final k = newScale / _gestureStartScale;
-      final center = Offset(Get.width / 2, Get.height / 2);
-      final newOffset = _gestureStartOffset * k +
-          (details.localFocalPoint - center) -
-          (_gestureStartFocal - center) * k;
-      playerScale.value = newScale;
-      playerOffset.value = _clampPlayerOffset(newOffset, newScale);
-      return;
-    }
-
-    // 单指：上下滑动切换直播间
-    if (_twoFingerUsed || _swipeTriggered) {
+    // 缩放状态下单指用于拖动画面，不触发换台
+    if (_twoFingerUsed ||
+        playerViewerController.value.getMaxScaleOnAxis() > 1.001) {
       return;
     }
     final delta = details.localFocalPoint - _swipeStartFocal;
     if (delta.dy.abs() > 70 && delta.dy.abs() > delta.dx.abs() * 1.2) {
-      _swipeTriggered = true;
-      if (delta.dy < 0) {
-        nextChannel();
-      } else {
-        prevChannel();
-      }
+      _swipeCandidate = true;
+      _swipeDirection = delta.dy < 0 ? 1 : -1;
+      gestureTipText.value =
+          _swipeDirection > 0 ? "松手切换到下一个直播间" : "松手切换到上一个直播间";
+      showGestureTip.value = true;
+    } else if (_swipeCandidate) {
+      _swipeCandidate = false;
+      _swipeDirection = 0;
+      showGestureTip.value = false;
     }
   }
 
-  /// 全屏手势结束
-  void onScaleEnd(ScaleEndDetails details) {
-    _transformGestureActive = false;
+  /// 画面手势结束
+  void onPlayerInteractionEnd(ScaleEndDetails details) {
     _twoFingerUsed = false;
-    _swipeTriggered = false;
-  }
-
-  void _startTransformGesture(Offset focal, double scaleFactor) {
-    _transformGestureActive = true;
-    _gestureStartScale = playerScale.value;
-    _gestureStartOffset = playerOffset.value;
-    _gestureStartFocal = focal;
-    _gestureStartFactor = scaleFactor;
-  }
-
-  /// 限制位移，避免画面完全拖出屏幕
-  Offset _clampPlayerOffset(Offset offset, double scale) {
-    final maxX = (scale - 1).abs() * Get.width / 2;
-    final maxY = (scale - 1).abs() * Get.height / 2;
-    return Offset(
-      offset.dx.clamp(-maxX, maxX).toDouble(),
-      offset.dy.clamp(-maxY, maxY).toDouble(),
-    );
+    showGestureTip.value = false;
+    final direction = _swipeCandidate ? _swipeDirection : 0;
+    _swipeCandidate = false;
+    _swipeDirection = 0;
+    if (lockControlsState.value) {
+      return;
+    }
+    if (direction > 0) {
+      nextChannel();
+    } else if (direction < 0) {
+      prevChannel();
+    }
   }
 
   bool verticalDragging = false;
@@ -969,6 +942,7 @@ class PlayerController extends BaseController
     disposeDanmakuController();
     await resetSystem();
     await player.dispose();
+    playerViewerController.dispose();
     super.onClose();
   }
 }
