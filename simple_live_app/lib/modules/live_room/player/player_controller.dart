@@ -573,7 +573,7 @@ mixin PlayerGestureControlMixin
     _swipeTriggered = false;
     _twoFingerUsed = details.pointerCount >= 2;
     if (_twoFingerUsed) {
-      _startTransformGesture(details.localFocalPoint, details.scale);
+      _startTransformGesture(details.localFocalPoint, 1.0);
     } else {
       _swipeStartFocal = details.localFocalPoint;
     }
