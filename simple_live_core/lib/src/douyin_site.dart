@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_core/src/common/convert_helper.dart';
+import 'package:simple_live_core/src/common/core_error.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:simple_live_core/src/scripts/douyin_sign.dart';
 
@@ -258,16 +259,18 @@ class DouyinSite implements LiveSite {
     // 读取房间信息
     var roomData = await _getRoomDataByRoomId(roomId);
 
+    var room = asT<Map>(asT<Map>(roomData["data"])?["room"]);
+    var owner = asT<Map>(room?["owner"]);
     // 通过房间信息获取WebRid
-    var webRid = roomData["data"]["room"]["owner"]["web_rid"].toString();
+    var webRid = owner?["web_rid"]?.toString() ?? "";
+    if (room == null || webRid.isEmpty) {
+      throw CoreError("抖音直播间信息获取失败，请稍后重试");
+    }
 
     // 读取用户唯一ID，用于弹幕连接
     // 似乎这个参数不是必须的，先随机生成一个
     //var userUniqueId = await _getUserUniqueId(webRid);
     var userUniqueId = generateRandomNumber(12).toString();
-
-    var room = roomData["data"]["room"];
-    var owner = room["owner"];
 
     var status = asT<int?>(room["status"]) ?? 0;
 
@@ -284,16 +287,16 @@ class DouyinSite implements LiveSite {
 
     return LiveRoomDetail(
       roomId: webRid,
-      title: room["title"].toString(),
-      cover: roomStatus ? room["cover"]["url_list"][0].toString() : "",
-      userName: owner["nickname"].toString(),
-      userAvatar: owner["avatar_thumb"]["url_list"][0].toString(),
+      title: room["title"]?.toString() ?? "",
+      cover: roomStatus ? _getFirstImageUrl(room["cover"]) : "",
+      userName: owner?["nickname"]?.toString() ?? "",
+      userAvatar: _getFirstImageUrl(owner?["avatar_thumb"]),
       online: roomStatus
-          ? asT<int?>(room["room_view_stats"]["display_value"]) ?? 0
+          ? asT<int?>(asT<Map>(room["room_view_stats"])?["display_value"]) ?? 0
           : 0,
       status: roomStatus,
       url: "https://live.douyin.com/$webRid",
-      introduction: owner["signature"].toString(),
+      introduction: owner?["signature"]?.toString() ?? "",
       notice: "",
       danmakuData: DouyinDanmakuArgs(
         webRid: webRid,
@@ -301,7 +304,7 @@ class DouyinSite implements LiveSite {
         userId: userUniqueId,
         cookie: headers["cookie"],
       ),
-      data: room["stream_url"],
+      data: asT<Map>(room["stream_url"]) ?? {},
     );
   }
 
@@ -312,10 +315,17 @@ class DouyinSite implements LiveSite {
     try {
       var result = await _getRoomDetailByWebRidApi(webRid);
       return result;
-    } catch (e) {
+    } catch (e, stackTrace) {
       CoreLog.error(e);
+      CoreLog.error(stackTrace);
     }
-    return await _getRoomDetailByWebRidHtml(webRid);
+    try {
+      return await _getRoomDetailByWebRidHtml(webRid);
+    } catch (e, stackTrace) {
+      CoreLog.error(e);
+      CoreLog.error(stackTrace);
+      throw CoreError("抖音直播间信息获取失败，请稍后重试");
+    }
   }
 
   /// 通过WebRid访问直播间API，从API中获取直播间信息
@@ -372,30 +382,37 @@ class DouyinSite implements LiveSite {
   /// - 返回直播间信息
   Future<LiveRoomDetail> _getRoomDetailByWebRidHtml(String webRid) async {
     var roomData = await _getRoomDataByHtml(webRid);
-    var roomId = roomData["roomStore"]["roomInfo"]["room"]["id_str"].toString();
-    var userUniqueId = roomData["userStore"]["odin"]["user_unique_id"]
-        .toString();
+    var roomStore = asT<Map>(roomData["roomStore"]);
+    var roomInfo = asT<Map>(roomStore?["roomInfo"]);
+    var room = asT<Map>(roomInfo?["room"]);
+    if (room == null) {
+      throw CoreError("抖音直播间信息解析失败，请稍后重试");
+    }
 
-    var room = roomData["roomStore"]["roomInfo"]["room"];
-    var owner = room["owner"];
-    var anchor = roomData["roomStore"]["roomInfo"]["anchor"];
+    var roomId = room["id_str"]?.toString() ?? "";
+    // userStore.odin 在部分页面变体（未登录/风控）中可能为空，
+    // 该字段仅用于弹幕连接，缺失时随机生成即可。
+    var odin = asT<Map>(asT<Map>(roomData["userStore"])?["odin"]);
+    var userUniqueId =
+        odin?["user_unique_id"]?.toString() ??
+        generateRandomNumber(12).toString();
+
+    var owner = asT<Map>(room["owner"]);
+    var anchor = asT<Map>(roomInfo?["anchor"]);
     var roomStatus = (asT<int?>(room["status"]) ?? 0) == 2;
+    var userInfo = roomStatus ? owner : anchor;
 
     // 主要是为了获取cookie,用于弹幕websocket连接
     var headers = await getRequestHeaders();
 
     return LiveRoomDetail(
       roomId: webRid,
-      title: room["title"].toString(),
-      cover: roomStatus ? room["cover"]["url_list"][0].toString() : "",
-      userName: roomStatus
-          ? owner["nickname"].toString()
-          : anchor["nickname"].toString(),
-      userAvatar: roomStatus
-          ? owner["avatar_thumb"]["url_list"][0].toString()
-          : anchor["avatar_thumb"]["url_list"][0].toString(),
+      title: room["title"]?.toString() ?? "",
+      cover: roomStatus ? _getFirstImageUrl(room["cover"]) : "",
+      userName: userInfo?["nickname"]?.toString() ?? "",
+      userAvatar: _getFirstImageUrl(userInfo?["avatar_thumb"]),
       online: roomStatus
-          ? asT<int?>(room["room_view_stats"]["display_value"]) ?? 0
+          ? asT<int?>(asT<Map>(room["room_view_stats"])?["display_value"]) ?? 0
           : 0,
       status: roomStatus,
       url: "https://live.douyin.com/$webRid",
@@ -407,8 +424,17 @@ class DouyinSite implements LiveSite {
         userId: userUniqueId,
         cookie: headers["cookie"],
       ),
-      data: roomStatus ? room["stream_url"] : {},
+      data: roomStatus ? (asT<Map>(room["stream_url"]) ?? {}) : {},
     );
+  }
+
+  /// 从图片信息中取出第一张图片地址
+  String _getFirstImageUrl(dynamic imageData) {
+    var urlList = asT<Map>(imageData)?["url_list"];
+    if (urlList is List && urlList.isNotEmpty) {
+      return urlList.first?.toString() ?? "";
+    }
+    return "";
   }
 
   /// 读取用户的唯一ID
@@ -423,56 +449,101 @@ class DouyinSite implements LiveSite {
     }
   }
 
+  /// 网页请求需要携带的Cookie字段
+  static const List<String> _webCookieKeys = [
+    "ttwid",
+    "__ac_nonce",
+    "msToken",
+    "UIFID",
+    "UIFID_TEMP",
+  ];
+
   /// 进入直播间前需要先获取cookie
   /// - [webRid] 直播间RID
   Future<String> _getWebCookie(String webRid) async {
+    var requestHeaders = await getRequestHeaders();
     var headResp = await HttpClient.instance.head(
       "https://live.douyin.com/$webRid",
-      header: headers,
+      header: {...requestHeaders},
     );
-    var dyCookie = "";
+
+    var cookieMap = <String, String>{};
+
+    void addCookie(String cookie) {
+      var item = cookie.trim();
+      var index = item.indexOf("=");
+      if (index <= 0) return;
+      var name = item.substring(0, index);
+      var value = item.substring(index + 1);
+      if (value.isNotEmpty) {
+        cookieMap[name] = value;
+      }
+    }
+
+    // 保留默认或用户自定义的Cookie，避免网页回退时丢失登录/风控信息
+    requestHeaders["cookie"]?.toString().split(";").forEach(addCookie);
+    // 合并服务端下发的新Cookie（同名时覆盖旧值）
     headResp.headers["set-cookie"]?.forEach((element) {
-      var cookie = element.split(";")[0];
-      if (cookie.contains("ttwid")) {
-        dyCookie += "$cookie;";
-      }
-      if (cookie.contains("__ac_nonce")) {
-        dyCookie += "$cookie;";
-      }
-      if (cookie.contains("msToken")) {
-        dyCookie += "$cookie;";
+      var cookie = element.split(";").first.trim();
+      var index = cookie.indexOf("=");
+      if (index <= 0) return;
+      var name = cookie.substring(0, index);
+      if (_webCookieKeys.contains(name)) {
+        addCookie(cookie);
       }
     });
-    return dyCookie;
+    return cookieMap.entries.map((e) => "${e.key}=${e.value}").join("; ");
   }
 
   /// 通过webRid获取直播间Web信息
   /// - [webRid] 直播间RID
   Future<Map> _getRoomDataByHtml(String webRid) async {
-    var dyCookie = await _getWebCookie(webRid);
-    var result = await HttpClient.instance.getText(
-      "https://live.douyin.com/$webRid",
-      queryParameters: {},
-      header: {
-        "Authority": kDefaultAuthority,
-        "Referer": kDefaultReferer,
-        "Cookie": dyCookie,
-        "User-Agent": kDefaultUserAgent,
-      },
-    );
+    // 页面偶尔会返回不完整的数据（如缺少 roomStore），重试一次
+    for (var attempt = 0; attempt < 2; attempt++) {
+      var dyCookie = await _getWebCookie(webRid);
+      var result = await HttpClient.instance.getText(
+        "https://live.douyin.com/$webRid",
+        queryParameters: {},
+        header: {
+          "Authority": kDefaultAuthority,
+          "Referer": kDefaultReferer,
+          "Cookie": dyCookie,
+          "User-Agent": kDefaultUserAgent,
+        },
+      );
 
+      var state = _parseRoomState(result);
+      var roomInfo = asT<Map>(asT<Map>(state?["roomStore"])?["roomInfo"]);
+      if (asT<Map>(roomInfo?["room"]) != null) {
+        return state!;
+      }
+      _logDebug("直播间网页数据不完整，第${attempt + 1}次获取失败");
+    }
+    throw CoreError("抖音直播间信息获取失败，请稍后重试");
+  }
+
+  /// 从直播间网页HTML中解析state数据
+  Map? _parseRoomState(String html) {
     var renderData =
         RegExp(
           r'\{\\"state\\":\{\\"appStore.*?\]\\n',
-        ).firstMatch(result)?.group(0) ??
+        ).firstMatch(html)?.group(0) ??
         "";
-    var str = renderData
-        .trim()
-        .replaceAll('\\"', '"')
-        .replaceAll(r"\\", r"\")
-        .replaceAll(']\\n', "");
-    var renderDataJson = json.decode(str);
-    return renderDataJson["state"];
+    if (renderData.isEmpty) {
+      return null;
+    }
+    try {
+      var str = renderData
+          .trim()
+          .replaceAll('\\"', '"')
+          .replaceAll(r"\\", r"\")
+          .replaceAll(']\\n', "");
+      var renderDataJson = json.decode(str);
+      return asT<Map>(renderDataJson["state"]);
+    } catch (e) {
+      CoreLog.error(e);
+      return null;
+    }
   }
 
   /// 通过webRid获取直播间Web信息
