@@ -312,12 +312,17 @@ class DouyinSite implements LiveSite {
   /// - [webRid] 直播间RID
   /// - 返回直播间信息
   Future<LiveRoomDetail> getRoomDetailByWebRid(String webRid) async {
-    try {
-      var result = await _getRoomDetailByWebRidApi(webRid);
-      return result;
-    } catch (e, stackTrace) {
-      CoreLog.error(e);
-      CoreLog.error(stackTrace);
+    // 接口偶发失败时重试一次
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await _getRoomDetailByWebRidApi(webRid);
+      } catch (e, stackTrace) {
+        CoreLog.error(e);
+        CoreLog.error(stackTrace);
+        if (attempt == 0) {
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+      }
     }
     try {
       return await _getRoomDetailByWebRidHtml(webRid);
@@ -498,26 +503,35 @@ class DouyinSite implements LiveSite {
   /// 通过webRid获取直播间Web信息
   /// - [webRid] 直播间RID
   Future<Map> _getRoomDataByHtml(String webRid) async {
-    // 页面偶尔会返回不完整的数据（如缺少 roomStore），重试一次
-    for (var attempt = 0; attempt < 2; attempt++) {
-      var dyCookie = await _getWebCookie(webRid);
-      var result = await HttpClient.instance.getText(
-        "https://live.douyin.com/$webRid",
-        queryParameters: {},
-        header: {
-          "Authority": kDefaultAuthority,
-          "Referer": kDefaultReferer,
-          "Cookie": dyCookie,
-          "User-Agent": kDefaultUserAgent,
-        },
-      );
+    // 网页可能返回不完整数据、验证页或临时网络错误，最多重试3次
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        var dyCookie = await _getWebCookie(webRid);
+        var result = await HttpClient.instance.getText(
+          "https://live.douyin.com/$webRid",
+          queryParameters: {},
+          header: {
+            "Authority": kDefaultAuthority,
+            "Referer": kDefaultReferer,
+            "Cookie": dyCookie,
+            "User-Agent": kDefaultUserAgent,
+          },
+        );
 
-      var state = _parseRoomState(result);
-      var roomInfo = asT<Map>(asT<Map>(state?["roomStore"])?["roomInfo"]);
-      if (asT<Map>(roomInfo?["room"]) != null) {
-        return state!;
+        var state = _parseRoomState(result);
+        var roomInfo = asT<Map>(asT<Map>(state?["roomStore"])?["roomInfo"]);
+        if (asT<Map>(roomInfo?["room"]) != null) {
+          return state!;
+        }
+        _logDebug("直播间网页数据不完整，第${attempt + 1}次获取失败");
+      } catch (e, stackTrace) {
+        CoreLog.error(e);
+        CoreLog.error(stackTrace);
+        _logDebug("直播间网页请求失败，第${attempt + 1}次");
       }
-      _logDebug("直播间网页数据不完整，第${attempt + 1}次获取失败");
+      if (attempt < 2) {
+        await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+      }
     }
     throw CoreError("抖音直播间信息获取失败，请稍后重试");
   }
