@@ -103,6 +103,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   var loadError = false.obs;
   Error? error;
 
+  /// 每次加载递增，避免旧请求覆盖新状态
+  int _loadToken = 0;
+
+  /// 播放失败后重新获取播放地址的次数
+  int _urlRefreshCount = 0;
+
   // 开播时长状态变量
   var liveDuration = "00:00:00".obs;
   Timer? _liveDurationTimer;
@@ -279,13 +285,18 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 加载直播间信息
   void loadData() async {
+    var token = ++_loadToken;
     try {
       SmartDialog.showLoading(msg: "");
       loadError.value = false;
       error = null;
       update();
       addSysMsg("正在读取直播间信息");
-      detail.value = await site.liveSite.getRoomDetail(roomId: roomId);
+      var newDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+      if (token != _loadToken) {
+        return;
+      }
+      detail.value = newDetail;
 
       if (site.id == Constant.kDouyin) {
         // 1.6.0之前收藏的WebRid
@@ -322,7 +333,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       online.value = detail.value!.online;
       liveStatus.value = detail.value!.status || detail.value!.isRecord;
       if (liveStatus.value) {
-        getPlayQualites();
+        getPlayQualites(token: token);
+      } else {
+        // 已下播时停止播放并清空旧的播放地址
+        qualites.clear();
+        playUrls.clear();
+        currentQuality = -1;
+        currentQualityInfo.value = "";
+        currentLineInfo.value = "";
+        try {
+          await player.stop();
+        } catch (e) {
+          Log.logPrint(e);
+        }
       }
       if (detail.value!.isRecord) {
         addSysMsg("当前主播未开播，正在轮播录像");
@@ -332,23 +355,32 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       liveDanmaku.start(detail.value?.danmakuData);
       startLiveDurationTimer(); // 启动开播时长定时器
     } catch (e) {
+      if (token != _loadToken) {
+        return;
+      }
       Log.logPrint(e);
       //SmartDialog.showToast(e.toString());
       loadError.value = true;
       error = e as Error;
     } finally {
-      SmartDialog.dismiss(status: SmartStatus.loading);
+      if (token == _loadToken) {
+        SmartDialog.dismiss(status: SmartStatus.loading);
+      }
     }
   }
 
   /// 初始化播放器
-  void getPlayQualites() async {
+  Future<void> getPlayQualites({int? token}) async {
+    var requestToken = token ?? _loadToken;
     qualites.clear();
     currentQuality = -1;
 
     try {
       var playQualites =
           await site.liveSite.getPlayQualites(detail: detail.value!);
+      if (requestToken != _loadToken) {
+        return;
+      }
 
       if (playQualites.isEmpty) {
         SmartDialog.showToast("无法读取播放清晰度");
@@ -356,6 +388,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
       qualites.value = playQualites;
       var qualityLevel = await getQualityLevel();
+      if (requestToken != _loadToken) {
+        return;
+      }
       if (qualityLevel == 2) {
         //最高
         currentQuality = 0;
@@ -368,8 +403,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         currentQuality = middle;
       }
 
-      getPlayUrl();
+      getPlayUrl(token: requestToken);
     } catch (e) {
+      if (requestToken != _loadToken) {
+        return;
+      }
       Log.logPrint(e);
       SmartDialog.showToast("无法读取播放清晰度");
     }
@@ -389,13 +427,20 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     return qualityLevel;
   }
 
-  void getPlayUrl() async {
+  void getPlayUrl({int? token}) async {
+    var requestToken = token ?? _loadToken;
+    if (requestToken != _loadToken) {
+      return;
+    }
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
     var playUrl = await site.liveSite
         .getPlayUrls(detail: detail.value!, quality: qualites[currentQuality]);
+    if (requestToken != _loadToken) {
+      return;
+    }
     if (playUrl.urls.isEmpty) {
       SmartDialog.showToast("无法读取播放地址");
       return;
@@ -406,6 +451,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     //重置错误次数
     mediaErrorRetryCount = 0;
+    _urlRefreshCount = 0;
     initPlaylist();
   }
 
@@ -480,6 +526,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       mediaErrorRetryCount += 1;
       //刷新一次
       setPlayer();
+      return;
+    }
+
+    // 本地重试仍失败，重新拉取直播间信息以获取新的播放地址
+    if (liveStatus.value && _urlRefreshCount < 1) {
+      _urlRefreshCount += 1;
+      Log.d("播放失败，重新获取直播间信息和播放地址");
+      loadData();
       return;
     }
 

@@ -33,6 +33,9 @@ class DouyinSite implements LiveSite {
   /// 用户设置的 cookie
   String cookie = "";
 
+  /// 缓存 webRid 对应的 roomId，接口与网页都失败时用于兜底
+  final Map<String, String> _webRidRoomIdCache = {};
+
   void _logDebug(String msg) {
     // 同时使用 print 和 CoreLog 确保日志输出
     print("[Douyin] $msg");
@@ -255,7 +258,10 @@ class DouyinSite implements LiveSite {
   /// 通过roomId获取直播间信息
   /// - [roomId] 直播间ID
   /// - 返回直播间信息
-  Future<LiveRoomDetail> getRoomDetailByRoomId(String roomId) async {
+  Future<LiveRoomDetail> getRoomDetailByRoomId(
+    String roomId, {
+    bool allowWebRidFallback = true,
+  }) async {
     // 读取房间信息
     var roomData = await _getRoomDataByRoomId(roomId);
 
@@ -276,7 +282,7 @@ class DouyinSite implements LiveSite {
 
     // roomId是一次性的，用户每次重新开播都会生成一个新的roomId
     // 所以如果roomId对应的直播间状态不是直播中，就通过webRid获取直播间信息
-    if (status == 4) {
+    if (status == 4 && allowWebRidFallback) {
       var result = await getRoomDetailByWebRid(webRid);
       return result;
     }
@@ -329,8 +335,21 @@ class DouyinSite implements LiveSite {
     } catch (e, stackTrace) {
       CoreLog.error(e);
       CoreLog.error(stackTrace);
-      throw CoreError("抖音直播间信息获取失败，请稍后重试");
     }
+    // 接口和网页都失败时，用缓存的 roomId 走移动端接口兜底
+    var cachedRoomId = _webRidRoomIdCache[webRid];
+    if (cachedRoomId != null && cachedRoomId.isNotEmpty) {
+      try {
+        return await getRoomDetailByRoomId(
+          cachedRoomId,
+          allowWebRidFallback: false,
+        );
+      } catch (e, stackTrace) {
+        CoreLog.error(e);
+        CoreLog.error(stackTrace);
+      }
+    }
+    throw CoreError("抖音直播间信息获取失败，请稍后重试");
   }
 
   /// 通过WebRid访问直播间API，从API中获取直播间信息
@@ -343,6 +362,9 @@ class DouyinSite implements LiveSite {
     var roomData = data["data"][0];
     var userData = data["user"];
     var roomId = roomData["id_str"].toString();
+    if (roomId.isNotEmpty) {
+      _webRidRoomIdCache[webRid] = roomId;
+    }
 
     // 读取用户唯一ID，用于弹幕连接
     // 似乎这个参数不是必须的，先随机生成一个
@@ -395,6 +417,9 @@ class DouyinSite implements LiveSite {
     }
 
     var roomId = room["id_str"]?.toString() ?? "";
+    if (roomId.isNotEmpty) {
+      _webRidRoomIdCache[webRid] = roomId;
+    }
     // userStore.odin 在部分页面变体（未登录/风控）中可能为空，
     // 该字段仅用于弹幕连接，缺失时随机生成即可。
     var odin = asT<Map>(asT<Map>(roomData["userStore"])?["odin"]);
@@ -536,13 +561,38 @@ class DouyinSite implements LiveSite {
     throw CoreError("抖音直播间信息获取失败，请稍后重试");
   }
 
+  /// 网页中可能存在的state数据模式
+  static final List<RegExp> _roomStatePatterns = [
+    RegExp(r'\{\\"state\\":\{\\"appStore.*?\]\\n'),
+    RegExp(r'\{\\"state\\":\{\\"isLiveModal.*?\]\\n'),
+    RegExp(r'\{\\"state\\":\{\\"[^"]+.*?\]\\n'),
+  ];
+
   /// 从直播间网页HTML中解析state数据
   Map? _parseRoomState(String html) {
-    var renderData =
-        RegExp(
-          r'\{\\"state\\":\{\\"appStore.*?\]\\n',
-        ).firstMatch(html)?.group(0) ??
-        "";
+    Map? fallbackState;
+    var decodedCount = 0;
+    for (var pattern in _roomStatePatterns) {
+      for (var match in pattern.allMatches(html)) {
+        if (decodedCount++ > 20) {
+          return fallbackState;
+        }
+        var state = _decodeRoomState(match.group(0) ?? "");
+        if (state == null) {
+          continue;
+        }
+        fallbackState ??= state;
+        var roomInfo = asT<Map>(asT<Map>(state["roomStore"])?["roomInfo"]);
+        if (asT<Map>(roomInfo?["room"]) != null) {
+          return state;
+        }
+      }
+    }
+    return fallbackState;
+  }
+
+  /// 解析单个state数据块
+  Map? _decodeRoomState(String renderData) {
     if (renderData.isEmpty) {
       return null;
     }
